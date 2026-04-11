@@ -3,16 +3,11 @@ import numpy as np
 import os
 import tempfile
 import gradio as gr
-import mediapipe as mp
 from datetime import datetime
 
 # Face detector
 model_path = 'face_detection_yunet_2023mar.onnx'
 face_detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320))
-
-# Face mesh
-from mediapipe.python.solutions.face_mesh import FaceMesh
-face_mesh = FaceMesh(static_image_mode=False, max_num_faces=1, min_detection_confidence=0.5)
 
 # Glasses state
 num = 1
@@ -43,13 +38,11 @@ def overlay_png(background, fg, pos):
     return background
 
 
-def determine_face_shape(landmarks):
-    jaw_width = np.linalg.norm(landmarks[0] - landmarks[16])
-    face_height = np.linalg.norm(landmarks[8] - landmarks[27])
-    ratio = jaw_width / face_height
-    if ratio > 1.5:
+def determine_face_shape(w, h):
+    ratio = w / h
+    if ratio > 0.90:
         return "Round"
-    elif ratio < 1.2:
+    elif ratio < 0.75:
         return "Oval"
     return "Square"
 
@@ -64,41 +57,33 @@ def change_glasses():
     overlay = _load_glass(num)
 
 
-def change_lip_color(frame, color_name):
+def change_lip_color(frame, color_name, mouth_pts):
     color_map = {
-        'classic_red': (255, 0, 0),   'deep_red':    (139, 0, 0),
-        'cherry_red':  (205, 0, 0),   'rose_red':    (204, 102, 0),
-        'wine_red':    (128, 0, 0),   'brick_red':   (128, 64, 0),
-        'coral_red':   (255, 128, 0), 'berry_red':   (153, 0, 0),
-        'ruby_red':    (255, 17, 0),  'crimson_red': (220, 20, 60),
+        'classic_red': (0, 0, 255),   'deep_red':    (0, 0, 139),
+        'cherry_red':  (0, 0, 205),   'rose_red':    (0, 102, 204),
+        'wine_red':    (0, 0, 128),   'brick_red':   (0, 64, 128),
+        'coral_red':   (0, 128, 255), 'berry_red':   (0, 0, 153),
+        'ruby_red':    (0, 17, 255),  'crimson_red': (60, 20, 220),
     }
     color = color_map.get(color_name)
-    if color is None:
+    if color is None or mouth_pts is None:
         return frame
 
-    results = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    if not results.multi_face_landmarks:
-        return frame
+    lx, ly = mouth_pts[0]
+    rx, ry = mouth_pts[1]
+    cx = (lx + rx) // 2
+    cy = (ly + ry) // 2
+    lip_w = int(np.linalg.norm([rx - lx, ry - ly]) * 0.65)
+    lip_h = max(int(lip_w * 0.28), 4)
 
-    for lm in results.multi_face_landmarks:
-        def pt(i):
-            return (lm.landmark[i].x * frame.shape[1], lm.landmark[i].y * frame.shape[0])
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    cv2.ellipse(mask, (cx, cy), (lip_w, lip_h), 0, 0, 360, 255, -1)
 
-        upper = np.array([pt(i) for i in [61,185,40,39,37,0,267,269,270,409,291,61]], np.int32)
-        lower = np.array([pt(i) for i in [61,146,91,181,84,17,314,405,321,375,291,61]], np.int32)
-        teeth = np.array([pt(i) for i in [78,95,88,178,87,14,317,402,318,324,308,78]], np.int32)
-
-        lip_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        cv2.fillPoly(lip_mask, [np.concatenate((upper, lower))], 255)
-        teeth_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        cv2.fillPoly(teeth_mask, [teeth], 255)
-        mask = cv2.subtract(lip_mask, teeth_mask)
-
-        colored = np.full_like(frame, color)
-        frame = cv2.add(
-            cv2.bitwise_and(frame, frame, mask=cv2.bitwise_not(mask)),
-            cv2.bitwise_and(colored, colored, mask=mask)
-        )
+    colored = np.full_like(frame, color)
+    frame = cv2.add(
+        cv2.bitwise_and(frame, frame, mask=cv2.bitwise_not(mask)),
+        cv2.bitwise_and(colored, colored, mask=mask)
+    )
     return frame
 
 
@@ -109,18 +94,19 @@ def process_frame(frame):
 
     face_detector.setInputSize((w, h))
     _, faces = face_detector.detect(frame)
-    results = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
     face_shape, glass_shape = "Unknown", "Unknown"
+    mouth_pts = None
 
-    if faces is not None and results.multi_face_landmarks:
+    if faces is not None:
         for face in faces:
-            x, y, fw, fh = face[:4].astype(int)
+            fx, fy, fw, fh = face[:4].astype(int)
             pts = face[4:14].reshape(5, 2).astype(int)
-            lx, ly = pts[0]
-            rx, ry = pts[1]
+            lx, ly = pts[0]   # left eye
+            rx, ry = pts[1]   # right eye
             cx, cy = (lx + rx) // 2, (ly + ry) // 2
             angle = -np.degrees(np.arctan2(ry - ly, rx - lx))
+            mouth_pts = (pts[3], pts[4])  # mouth corners
 
             ov = cv2.resize(overlay, (int(fw * 1.15), int(fh * 0.8)))
             M = cv2.getRotationMatrix2D((ov.shape[1] // 2, ov.shape[0] // 2), angle, 1.0)
@@ -132,12 +118,10 @@ def process_frame(frame):
             except Exception as e:
                 print(f"Overlay error: {e}")
 
-            for mp_lm in results.multi_face_landmarks:
-                landmarks = np.array([(l.x * w, l.y * h, l.z * w) for l in mp_lm.landmark])
-                face_shape = determine_face_shape(landmarks)
-                glass_shape = recommend_glass_shape(face_shape)
+            face_shape = determine_face_shape(fw, fh)
+            glass_shape = recommend_glass_shape(face_shape)
 
-    return frame, face_shape, glass_shape
+    return frame, face_shape, glass_shape, mouth_pts
 
 
 def apply_filter(frame, transform):
@@ -173,11 +157,11 @@ def save_frame(frame):
 
 
 def webcam_input(frame, transform, lip_color):
-    frame, face_shape, glass_shape = process_frame(frame)
+    frame, face_shape, glass_shape, mouth_pts = process_frame(frame)
     if transform != "none" and lip_color == "none":
         frame = apply_filter(frame, transform)
     elif lip_color != "none" and transform == "none":
-        frame = change_lip_color(frame, lip_color)
+        frame = change_lip_color(frame, lip_color, mouth_pts)
     return frame, face_shape, glass_shape
 
 
