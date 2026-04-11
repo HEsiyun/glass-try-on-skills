@@ -28,7 +28,7 @@ face_landmarker = mp_vision.FaceLandmarker.create_from_options(
         base_options=mp_python.BaseOptions(model_asset_path=LANDMARK_MODEL),
         num_faces=1,
         min_face_detection_confidence=0.5,
-        min_face_presence_score=0.5,
+        min_face_presence_confidence=0.5,
         min_tracking_confidence=0.5,
     )
 )
