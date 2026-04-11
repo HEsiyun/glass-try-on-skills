@@ -6,6 +6,7 @@ colorTo: blue
 sdk: gradio
 app_file: app.py
 pinned: false
+python_version: "3.10"
 ---
 
 # Glasses Virtual Try-On
