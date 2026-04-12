@@ -57,41 +57,6 @@ def recommend_glass_shape(face_shape):
     return "Round" if face_shape == "Oval" else "Square"
 
 
-def change_lip_color(frame, color_name, mouth_pts):
-    """Approximate lip region using YuNet mouth corner landmarks."""
-    color_map = {
-        "classic_red": (0, 0, 255),   "deep_red":    (0, 0, 139),
-        "cherry_red":  (0, 0, 205),   "rose_red":    (0, 102, 204),
-        "wine_red":    (0, 0, 128),   "brick_red":   (0, 64, 128),
-        "coral_red":   (0, 128, 255), "berry_red":   (0, 0, 153),
-        "ruby_red":    (0, 17, 255),  "crimson_red": (60, 20, 220),
-    }
-    color = color_map.get(color_name)
-    if color is None or mouth_pts is None:
-        return frame
-
-    lx, ly = mouth_pts[0]
-    rx, ry = mouth_pts[1]
-    cx = int((lx + rx) / 2)
-    cy = int((ly + ry) / 2) + 4
-    lip_w = max(int(np.linalg.norm([rx - lx, ry - ly]) * 0.58), 5)
-    lip_h = max(int(lip_w * 0.32), 4)
-
-    # Two ellipses — upper and lower lip
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    cv2.ellipse(mask, (cx, cy - lip_h // 3), (lip_w, lip_h // 2), 0, 180, 360, 255, -1)
-    cv2.ellipse(mask, (cx, cy + lip_h // 3), (lip_w, lip_h // 2), 0, 0, 180, 255, -1)
-
-    colored = np.full_like(frame, color)
-    alpha_lip = 0.55
-    lip_area = cv2.bitwise_and(colored, colored, mask=mask)
-    orig_area = cv2.bitwise_and(frame, frame, mask=mask)
-    blended = cv2.addWeighted(lip_area, alpha_lip, orig_area, 1 - alpha_lip, 0)
-    frame = frame.copy()
-    frame[mask == 255] = blended[mask == 255]
-    return frame
-
-
 # ── Main processing ───────────────────────────────────────────────────────────
 def process_frame(frame):
     global overlay
@@ -103,7 +68,6 @@ def process_frame(frame):
     _, faces = face_detector.detect(frame_bgr)
 
     face_shape, glass_shape = "Unknown", "Unknown"
-    mouth_pts = None
 
     if faces is not None:
         for face in faces:
@@ -113,7 +77,6 @@ def process_frame(frame):
             rx, ry = pts[1]
             cx, cy = (lx + rx) // 2, (ly + ry) // 2
             angle  = -np.degrees(np.arctan2(ry - ly, rx - lx))
-            mouth_pts = (pts[3], pts[4])
 
             ov = cv2.resize(overlay, (int(fw * 1.15), int(fh * 0.8)))
             M  = cv2.getRotationMatrix2D((ov.shape[1] // 2, ov.shape[0] // 2), angle, 1.0)
@@ -128,7 +91,7 @@ def process_frame(frame):
             face_shape  = determine_face_shape(fw, fh)
             glass_shape = recommend_glass_shape(face_shape)
 
-    return frame, face_shape, glass_shape, mouth_pts
+    return frame, face_shape, glass_shape
 
 
 def apply_filter(frame, transform):
@@ -165,14 +128,12 @@ def save_frame(frame):
     return path
 
 
-def webcam_input(frame, transform, lip_color):
+def webcam_input(frame, transform):
     if frame is None:
         return None, "", ""
-    frame, face_shape, glass_shape, mouth_pts = process_frame(frame)
-    if transform != "none" and lip_color == "none":
+    frame, face_shape, glass_shape = process_frame(frame)
+    if transform != "none":
         frame = apply_filter(frame, transform)
-    elif lip_color != "none" and transform == "none":
-        frame = change_lip_color(frame, lip_color, mouth_pts)
     return frame, face_shape, glass_shape
 
 
@@ -186,10 +147,6 @@ with gr.Blocks() as demo:
                 transform = gr.Dropdown(
                     choices=["cartoon", "edges", "sepia", "negative", "sketch", "blur", "none"],
                     value="none", label="Select Filter")
-                lip_color = gr.Dropdown(
-                    choices=["classic_red", "deep_red", "cherry_red", "rose_red", "wine_red",
-                             "brick_red", "coral_red", "berry_red", "ruby_red", "crimson_red", "none"],
-                    value="none", label="Select Lip Color")
             gr.Markdown("<p style='color:purple;'>🟣Start the webcam on the left — processed output appears on the right.</p>")
             with gr.Row():
                 input_img  = gr.Image(sources=["webcam"], type="numpy", streaming=True, label="Webcam")
@@ -203,7 +160,7 @@ with gr.Blocks() as demo:
             download_link = gr.File(label="Download Saved Picture")
 
     input_img.stream(webcam_input,
-                     [input_img, transform, lip_color],
+                     [input_img, transform],
                      [output_img, face_shape_out, glass_shape_out],
                      stream_every=0.1)
     next_button.click(change_glasses, [], [])
