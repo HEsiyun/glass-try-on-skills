@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Temp files
+tmp/
+temp/
+
+# Output images
+glass_tryon_*.png
+
+# Cache
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Mac
+*.DS_Store
+
+# Keep assets
+!glasses/*.png
